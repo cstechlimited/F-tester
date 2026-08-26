@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>META-Server | Config Generator</title>
+    <style>
+        :root {
+            --bg-primary: #0f0f14;
+            --bg-secondary: #1a1a2e;
+            --bg-card: #16213e;
+            --bg-input: #1f2a44;
+            --border-color: #2a3a5e;
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0b8;
+            --accent: #4f8cff;
+            --accent-hover: #3a70dd;
+            --success: #2ecc71;
+            --danger: #e74c3c;
+            --transition-slow: 1.2s;
+            --transition-fast: 0.3s;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 2rem 1rem;
+            background-image: radial-gradient(circle at 10% 20%, rgba(79, 140, 255, 0.05) 0%, transparent 40%),
+                              radial-gradient(circle at 90% 80%, rgba(79, 140, 255, 0.05) 0%, transparent 40%);
+        }
+
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+
+        /* Header */
+        .app-header {
+            text-align: center;
+            margin-bottom: 2rem;
+            opacity: 0;
+            transform: translateY(-20px);
+            animation: slideDownFade 1.5s ease-out forwards;
+        }
+
+        .app-title {
+            font-size: 2.5rem;
+            font-weight: 600;
+            letter-spacing: 1px;
+            color: var(--text-primary);
+            text-shadow: 0 2px 10px rgba(79, 140, 255, 0.3);
+        }
+
+        .app-subtitle {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-top: 0.25rem;
+        }
+
+        /* Card Sections */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem 2rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+            opacity: 0;
+            transform: translateY(30px);
+            animation: slideUpFade 1.5s ease-out forwards;
+            transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+        }
+
+        .card:nth-child(1) { animation-delay: 0.2s; }
+        .card:nth-child(2) { animation-delay: 0.4s; }
+        .card:nth-child(3) { animation-delay: 0.6s; }
+        .card:nth-child(4) { animation-delay: 0.8s; }
+        .card:nth-child(5) { animation-delay: 1.0s; }
+        .card:nth-child(6) { animation-delay: 1.2s; }
+
+        .card-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--accent);
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+            display: flex;
+            flex-direction: column;
+        }
+
+        label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.3rem;
+            letter-spacing: 0.5px;
+        }
+
+        input, select {
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0.6rem 0.8rem;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+            font-family: inherit;
+            transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+            outline: none;
+        }
+
+        input:focus, select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.2);
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .checkbox-group label {
+            margin-bottom: 0;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent);
+            cursor: pointer;
+        }
+
+        /* Buttons */
+        .btn-container {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-top: 1.5rem;
+            opacity: 0;
+            transform: translateY(20px);
+            animation: slideUpFade 1.5s ease-out forwards;
+            animation-delay: 1.4s;
+        }
+
+        .btn {
+            padding: 0.75rem 1.8rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(79, 140, 255, 0.3);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(79, 140, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        /* Output area */
+        .output-container {
+            margin-top: 1.5rem;
+            opacity: 0;
+            transform: translateY(20px);
+            animation: slideUpFade 1.5s ease-out forwards;
+            animation-delay: 1.6s;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 300px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            color: var(--text-primary);
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.9rem;
+            resize: vertical;
+            outline: none;
+            transition: border-color var(--transition-fast);
+        }
+
+        textarea:focus {
+            border-color: var(--accent);
+        }
+
+        .copy-success {
+            color: var(--success);
+            font-size: 0.8rem;
+            margin-top: 0.3rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .copy-success.show {
+            opacity: 1;
+        }
+
+        /* Animations */
+        @keyframes slideUpFade {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideDownFade {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .card {
+                padding: 1rem 1.2rem;
+            }
+            .app-title {
+                font-size: 2rem;
+            }
+            .btn-container {
+                flex-direction: column;
+            }
+            .btn {
+                width: 100%;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="app-header">
+            <h1 class="app-title">META-Server</h1>
+            <div class="app-subtitle">Powered by CS-Technology</div>
+        </header>
+
+        <!-- Common Section -->
+        <section class="card" id="common-card">
+            <h2 class="card-title">Common</h2>
+            <div class="form-group">
+                <label for="login">Login (Account Number)</label>
+                <input type="text" id="login" placeholder="12345678">
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="text" id="password" placeholder="Your password">
+            </div>
+            <div class="form-group">
+                <label for="server">Server</label>
+                <input type="text" id="server" placeholder="BrokerName-Demo">
+            </div>
+        </section>
+
+        <!-- StartUp Section -->
+        <section class="card" id="startup-card">
+            <h2 class="card-title">StartUp</h2>
+            <div class="form-group">
+                <label for="symbol">Symbol</label>
+                <input type="text" id="symbol" placeholder="EURUSD">
+            </div>
+            <div class="form-group">
+                <label for="period">Period</label>
+                <select id="period">
+                    <option value="1">M1</option>
+                    <option value="5">M5</option>
+                    <option value="15">M15</option>
+                    <option value="30">M30</option>
+                    <option value="60" selected>H1</option>
+                    <option value="240">H4</option>
+                    <option value="1440">D1</option>
+                    <option value="10080">W1</option>
+                    <option value="43200">MN</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="expert">Expert Path (relative to Experts folder)</label>
+                <input type="text" id="expert" placeholder="Subfolder\ExpertName (use single backslash)">
+                <small style="color:var(--text-secondary); margin-top:0.2rem;">Will be converted to double backslashes in INI.</small>
+            </div>
+        </section>
+
+        <!-- Experts Section -->
+        <section class="card" id="experts-card">
+            <h2 class="card-title">Experts</h2>
+            <div class="checkbox-group">
+                <input type="checkbox" id="experts-enabled" checked>
+                <label for="experts-enabled">Enabled (Algo Trading)</label>
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="allow-dll" checked>
+                <label for="allow-dll">Allow DLL Imports</label>
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="allow-webrequest" checked>
+                <label for="allow-webrequest">Allow WebRequest</label>
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="allow-live" checked>
+                <label for="allow-live">Allow Live Trading</label>
+            </div>
+        </section>
+
+        <!-- Tester Section (Optional) -->
+        <section class="card" id="tester-card">
+            <h2 class="card-title">Tester (Optional)</h2>
+            <div class="checkbox-group">
+                <input type="checkbox" id="include-tester">
+                <label for="include-tester">Include Tester Section</label>
+            </div>
+            <div id="tester-fields" style="display: none; margin-top: 1rem;">
+                <div class="form-group">
+                    <label for="tester-expert">Expert</label>
+                    <input type="text" id="tester-expert" placeholder="Same as StartUp Expert">
+                </div>
+                <div class="form-group">
+                    <label for="tester-symbol">Symbol</label>
+                    <input type="text" id="tester-symbol" placeholder="EURUSD">
+                </div>
+                <div class="form-group">
+                    <label for="tester-period">Period</label>
+                    <select id="tester-period">
+                        <option value="M1">M1</option>
+                        <option value="M5">M5</option>
+                        <option value="M15">M15</option>
+                        <option value="M30">M30</option>
+                        <option value="H1" selected>H1</option>
+                        <option value="H4">H4</option>
+                        <option value="D1">D1</option>
+                        <option value="W1">W1</option>
+                        <option value="MN">MN</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="tester-model">Model</label>
+                    <select id="tester-model">
+                        <option value="0">Every tick</option>
+                        <option value="1">1 minute OHLC</option>
+                        <option value="2">Open prices only</option>
+                        <option value="3">Math calculations</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="tester-from">From Date (YYYY.MM.DD)</label>
+                    <input type="text" id="tester-from" placeholder="2020.01.01">
+                </div>
+                <div class="form-group">
+                    <label for="tester-to">To Date (YYYY.MM.DD)</label>
+                    <input type="text" id="tester-to" placeholder="2023.12.31">
+                </div>
+            </div>
+        </section>
+
+        <!-- Buttons -->
+        <div class="btn-container">
+            <button class="btn btn-primary" id="generate-btn">Generate INI</button>
+            <button class="btn btn-secondary" id="download-btn">Download .ini</button>
+        </div>
+
+        <!-- Output -->
+        <div class="output-container" id="output-container" style="display: none;">
+            <textarea id="ini-output" readonly></textarea>
+            <button class="btn btn-secondary" id="copy-btn" style="margin-top:0.5rem;">Copy to Clipboard</button>
+            <span class="copy-success" id="copy-success">Copied successfully.</span>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            // DOM elements
+            const includeTesterCheckbox = document.getElementById('include-tester');
+            const testerFields = document.getElementById('tester-fields');
+            const generateBtn = document.getElementById('generate-btn');
+            const downloadBtn = document.getElementById('download-btn');
+            const outputContainer = document.getElementById('output-container');
+            const iniOutput = document.getElementById('ini-output');
+            const copyBtn = document.getElementById('copy-btn');
+            const copySuccess = document.getElementById('copy-success');
+
+            // Toggle tester fields
+            includeTesterCheckbox.addEventListener('change', function() {
+                testerFields.style.display = this.checked ? 'block' : 'none';
+            });
+
+            // Helper: get value by id, default if empty
+            function getVal(id, def = '') {
+                const el = document.getElementById(id);
+                return el.value.trim() || def;
+            }
+
+            // Helper: convert single backslashes to double for INI path
+            function convertPath(str) {
+                return str.replace(/\\/g, '\\\\');
+            }
+
+            // Generate INI content
+            function generateINI() {
+                const lines = [];
+                lines.push('; INI FILE CONFIGURATIONS');
+                lines.push('; META-Server (powered by CS-Technology)');
+                lines.push('; Generated: ' + new Date().toLocaleString());
+                lines.push('');
+                lines.push('[Common]');
+                const login = getVal('login');
+                if (login) lines.push('Login=' + login);
+                const password = getVal('password');
+                if (password) lines.push('Password=' + password);
+                const server = getVal('server');
+                if (server) lines.push('Server=' + server);
+                lines.push('');
+
+                lines.push('[StartUp]');
+                const symbol = getVal('symbol');
+                if (symbol) lines.push('Symbol=' + symbol);
+                const period = getVal('period', '60');
+                lines.push('Period=' + period);
+                const expert = getVal('expert');
+                if (expert) lines.push('Expert=' + convertPath(expert));
+                lines.push('');
+
+                lines.push('[Experts]');
+                lines.push('Enabled=' + (document.getElementById('experts-enabled').checked ? '1' : '0'));
+                lines.push('AllowDllImport=' + (document.getElementById('allow-dll').checked ? '1' : '0'));
+                lines.push('AllowWebRequest=' + (document.getElementById('allow-webrequest').checked ? '1' : '0'));
+                lines.push('AllowLiveTrading=' + (document.getElementById('allow-live').checked ? '1' : '0'));
+                lines.push('');
+
+                if (includeTesterCheckbox.checked) {
+                    lines.push('[Tester]');
+                    const testerExpert = getVal('tester-expert') || expert;
+                    if (testerExpert) lines.push('Expert=' + convertPath(testerExpert));
+                    const testerSymbol = getVal('tester-symbol') || symbol;
+                    if (testerSymbol) lines.push('Symbol=' + testerSymbol);
+                    const testerPeriod = getVal('tester-period', 'H1');
+                    lines.push('Period=' + testerPeriod);
+                    const testerModel = getVal('tester-model', '0');
+                    lines.push('Model=' + testerModel);
+                    const fromDate = getVal('tester-from');
+                    if (fromDate) lines.push('FromDate=' + fromDate);
+                    const toDate = getVal('tester-to');
+                    if (toDate) lines.push('ToDate=' + toDate);
+                }
+
+                return lines.join('\n');
+            }
+
+            // Show output
+            function showOutput(content) {
+                iniOutput.value = content;
+                outputContainer.style.display = 'block';
+                // Re-trigger animation
+                outputContainer.style.animation = 'none';
+                void outputContainer.offsetWidth; // trigger reflow
+                outputContainer.style.animation = 'slideUpFade 1.5s ease-out forwards';
+            }
+
+            // Generate button click
+            generateBtn.addEventListener('click', function() {
+                const content = generateINI();
+                showOutput(content);
+            });
+
+            // Download button
+            downloadBtn.addEventListener('click', function() {
+                const content = generateINI();
+                const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'meta-server-config.ini';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                // Also show output
+                showOutput(content);
+            });
+
+            // Copy to clipboard
+            copyBtn.addEventListener('click', function() {
+                iniOutput.select();
+                document.execCommand('copy');
+                copySuccess.classList.add('show');
+                setTimeout(() => copySuccess.classList.remove('show'), 2000);
+            });
+
+            // Initial animation for header is already via CSS
+            // Buttons and output are hidden initially; they appear after interaction
+        })();
+    </script>
+</body>
+</html>
