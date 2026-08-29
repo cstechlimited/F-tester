@@ -1,0 +1,180 @@
+name: MT5 Headless
+
+on:
+  workflow_dispatch:
+
+jobs:
+
+  # Find every saved.ini and group them into maximum 3 per runner
+  prepare:
+    runs-on: windows-latest
+
+    outputs:
+      groups: ${{ steps.find.outputs.groups }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find Runners
+        id: find
+        shell: powershell
+        run: |
+          $configs = Get-ChildItem `
+            -Path $env:GITHUB_WORKSPACE `
+            -Filter "saved.ini" `
+            -Recurse `
+            -File
+
+          if ($configs.Count -eq 0) {
+            Write-Host "No saved.ini files found"
+            exit 1
+          }
+
+          Write-Host "Found $($configs.Count) saved.ini files"
+
+          $groups = @()
+          $current = @()
+
+          foreach ($config in $configs) {
+            $current += $config.FullName
+
+            if ($current.Count -eq 3) {
+              $groups += ,$current
+              $current = @()
+            }
+          }
+
+          if ($current.Count -gt 0) {
+            $groups += ,$current
+          }
+
+          Write-Host ""
+          Write-Host "Creating $($groups.Count) GitHub runner(s)"
+          Write-Host ""
+
+          $number = 1
+
+          foreach ($group in $groups) {
+            Write-Host "Runner $number:"
+            foreach ($ini in $group) {
+              Write-Host "  $ini"
+            }
+            $number++
+          }
+
+          $json = $groups | ConvertTo-Json -Compress
+
+          "groups=$json" >> $env:GITHUB_OUTPUT
+
+
+  mt5:
+    needs: prepare
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        configs: ${{ fromJSON(needs.prepare.outputs.groups) }}
+
+    steps:
+
+      - name: Download
+        shell: cmd
+        run: |
+          curl -fL "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -o mt5setup.exe
+          if not exist mt5setup.exe exit /b 1
+          for %%A in (mt5setup.exe) do if %%~zA==0 exit /b 1
+          echo Downloaded mt5setup.exe
+
+
+      - name: Install
+        shell: cmd
+        run: |
+          mt5setup.exe /auto /path:"C:\MT5"
+          echo Installer exit code: %ERRORLEVEL%
+
+          echo Checking C:\MT5...
+
+          if exist "C:\MT5\terminal64.exe" (
+            echo MT5 installed successfully
+            dir "C:\MT5"
+          ) else (
+            echo MT5 was NOT installed
+            dir "C:\MT5" 2>nul
+            exit /b 1
+          )
+
+
+      - name: Run
+        shell: powershell
+        run: |
+          $exe = Get-ChildItem `
+            C:\MT5 `
+            -Filter terminal64.exe `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (!$exe) {
+            Write-Host "terminal64.exe was not found"
+            exit 1
+          }
+
+          Write-Host "MT5 found: $($exe.FullName)"
+          Write-Host ""
+
+          $configs = '${{ toJSON(matrix.configs) }}' | ConvertFrom-Json
+
+          Write-Host "This GitHub runner has $($configs.Count) MT5 configuration(s)"
+          Write-Host ""
+
+          $processes = @()
+
+          foreach ($ini in $configs) {
+
+            $directoryToIni = Split-Path $ini -Parent
+
+            Write-Host "========================================"
+            Write-Host "Starting MT5"
+            Write-Host "Directory : $directoryToIni"
+            Write-Host "INI       : $ini"
+            Write-Host "Command   : terminal64.exe /config:`"$ini`""
+            Write-Host "========================================"
+
+            $process = Start-Process `
+              -FilePath $exe.FullName `
+              -ArgumentList "/config:`"$ini`"" `
+              -WorkingDirectory $directoryToIni `
+              -PassThru
+
+            $processes += $process
+
+            Start-Sleep -Seconds 2
+          }
+
+          Write-Host ""
+          Write-Host "All MT5 terminals started on this runner."
+          Write-Host ""
+
+          foreach ($process in $processes) {
+            Write-Host "MT5 PID: $($process.Id)"
+          }
+
+          Write-Host ""
+          Write-Host "Keeping runner alive while MT5 terminals are running..."
+
+          while ($true) {
+            $running = @(
+              $processes | Where-Object {
+                -not $_.HasExited
+              }
+            )
+
+            if ($running.Count -eq 0) {
+              Write-Host "All MT5 terminals have exited."
+              break
+            }
+
+            Start-Sleep -Seconds 30
+          }
