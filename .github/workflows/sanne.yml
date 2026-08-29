@@ -1,4 +1,3 @@
-```yaml
 name: MT5 Headless
 
 on:
@@ -751,4 +750,3 @@ jobs:
             Start-Sleep -Milliseconds 500
 
           }
-```
