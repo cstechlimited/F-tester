@@ -56,7 +56,7 @@ jobs:
           $number = 1
 
           foreach ($group in $groups) {
-            Write-Host "Runner $number:"
+            Write-Host "Runner ${number}:"
             foreach ($ini in $group) {
               Write-Host "  $ini"
             }
