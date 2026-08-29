@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-latest
 
     outputs:
-      groups: ${{ steps.find.outputs.groups }}
+      matrix: ${{ steps.find.outputs.matrix }}
 
     steps:
       - name: Checkout
@@ -20,11 +20,13 @@ jobs:
         id: find
         shell: powershell
         run: |
-          $configs = Get-ChildItem `
-            -Path $env:GITHUB_WORKSPACE `
-            -Filter "saved.ini" `
-            -Recurse `
-            -File
+          $configs = @(
+            Get-ChildItem `
+              -Path $env:GITHUB_WORKSPACE `
+              -Filter "saved.ini" `
+              -Recurse `
+              -File
+          )
 
           if ($configs.Count -eq 0) {
             Write-Host "No saved.ini files found"
@@ -32,40 +34,86 @@ jobs:
           }
 
           Write-Host "Found $($configs.Count) saved.ini files"
+          Write-Host ""
 
           $groups = @()
           $current = @()
 
           foreach ($config in $configs) {
-            $current += $config.FullName
 
+            # Make the path relative to the repository.
+            $relative = $config.FullName.Substring(
+              $env:GITHUB_WORKSPACE.Length + 1
+            )
+
+            # Normalize path separators.
+            $relative = $relative -replace '\\', '/'
+
+            # Every runner folder must contain servers.dat.
+            $servers = Join-Path $config.DirectoryName "servers.dat"
+
+            if (!(Test-Path $servers)) {
+              Write-Host ""
+              Write-Host "ERROR: servers.dat is missing"
+              Write-Host "Folder: $($config.DirectoryName)"
+              Write-Host "Expected: $servers"
+              Write-Host ""
+              exit 1
+            }
+
+            $current += $relative
+
+            # Maximum 3 MT5 configurations per GitHub runner.
             if ($current.Count -eq 3) {
-              $groups += ,$current
+              $groups += ,@($current)
               $current = @()
             }
           }
 
+          # Add remaining configurations.
           if ($current.Count -gt 0) {
-            $groups += ,$current
+            $groups += ,@($current)
           }
 
-          Write-Host ""
           Write-Host "Creating $($groups.Count) GitHub runner(s)"
           Write-Host ""
 
           $number = 1
 
           foreach ($group in $groups) {
+
             Write-Host "Runner ${number}:"
+
             foreach ($ini in $group) {
-              Write-Host "  $ini"
+              $folder = Split-Path $ini -Parent
+
+              Write-Host "  Folder  : $folder"
+              Write-Host "  INI     : $ini"
+              Write-Host "  Servers : $folder/servers.dat"
             }
+
+            Write-Host ""
             $number++
           }
 
-          $json = $groups | ConvertTo-Json -Compress
+          # Build a valid GitHub Actions matrix object.
+          $matrix = @{
+            include = @(
+              foreach ($group in $groups) {
+                @{
+                  configs = @($group)
+                }
+              }
+            )
+          }
 
-          "groups=$json" >> $env:GITHUB_OUTPUT
+          $json = $matrix | ConvertTo-Json -Compress -Depth 10
+
+          Write-Host "Matrix:"
+          Write-Host $json
+          Write-Host ""
+
+          "matrix=$json" >> $env:GITHUB_OUTPUT
 
 
   mt5:
@@ -74,17 +122,23 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix:
-        configs: ${{ fromJSON(needs.prepare.outputs.groups) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
 
     steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
 
       - name: Download
         shell: cmd
         run: |
           curl -fL "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -o mt5setup.exe
+
           if not exist mt5setup.exe exit /b 1
+
           for %%A in (mt5setup.exe) do if %%~zA==0 exit /b 1
+
           echo Downloaded mt5setup.exe
 
 
@@ -92,6 +146,7 @@ jobs:
         shell: cmd
         run: |
           mt5setup.exe /auto /path:"C:\MT5"
+
           echo Installer exit code: %ERRORLEVEL%
 
           echo Checking C:\MT5...
@@ -106,55 +161,205 @@ jobs:
           )
 
 
-      - name: Run
+      - name: Prepare Terminals
         shell: powershell
         run: |
-          $exe = Get-ChildItem `
-            C:\MT5 `
-            -Filter terminal64.exe `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
 
-          if (!$exe) {
+          $source = "C:\MT5"
+
+          if (!(Test-Path "$source\terminal64.exe")) {
             Write-Host "terminal64.exe was not found"
             exit 1
           }
 
-          Write-Host "MT5 found: $($exe.FullName)"
-          Write-Host ""
-
           $configs = '${{ toJSON(matrix.configs) }}' | ConvertFrom-Json
 
+          Write-Host ""
           Write-Host "This GitHub runner has $($configs.Count) MT5 configuration(s)"
           Write-Host ""
 
-          $processes = @()
+          $index = 1
 
-          foreach ($ini in $configs) {
+          foreach ($relativeIni in $configs) {
+
+            # Reconstruct the repository path on THIS runner.
+            $ini = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              ($relativeIni -replace '/', '\')
 
             $directoryToIni = Split-Path $ini -Parent
 
+            $servers = Join-Path `
+              $directoryToIni `
+              "servers.dat"
+
+            if (!(Test-Path $ini)) {
+              Write-Host "ERROR: saved.ini not found"
+              Write-Host $ini
+              exit 1
+            }
+
+            if (!(Test-Path $servers)) {
+              Write-Host "ERROR: servers.dat not found"
+              Write-Host $servers
+              exit 1
+            }
+
+            #
+            # Give every MT5 instance its own isolated directory.
+            #
+            $terminalDir = "C:\MT5-Runners\MT5-$index"
+
             Write-Host "========================================"
-            Write-Host "Starting MT5"
-            Write-Host "Directory : $directoryToIni"
-            Write-Host "INI       : $ini"
-            Write-Host "Command   : terminal64.exe /config:`"$ini`""
+            Write-Host "Preparing MT5 instance $index"
+            Write-Host "Repository : $directoryToIni"
+            Write-Host "INI        : $ini"
+            Write-Host "Servers    : $servers"
+            Write-Host "Terminal   : $terminalDir"
             Write-Host "========================================"
 
+            if (Test-Path $terminalDir) {
+              Remove-Item `
+                $terminalDir `
+                -Recurse `
+                -Force
+            }
+
+            New-Item `
+              -ItemType Directory `
+              -Path $terminalDir `
+              -Force | Out-Null
+
+            #
+            # Copy MT5 installation.
+            #
+            Copy-Item `
+              -Path "$source\*" `
+              -Destination $terminalDir `
+              -Recurse `
+              -Force
+
+            #
+            # Create config directory.
+            #
+            $configDir = Join-Path `
+              $terminalDir `
+              "config"
+
+            New-Item `
+              -ItemType Directory `
+              -Path $configDir `
+              -Force | Out-Null
+
+            #
+            # Copy this folder's servers.dat
+            # into this MT5 instance's config directory.
+            #
+            Copy-Item `
+              -Path $servers `
+              -Destination (Join-Path $configDir "servers.dat") `
+              -Force
+
+            #
+            # Copy this folder's saved.ini.
+            #
+            Copy-Item `
+              -Path $ini `
+              -Destination (Join-Path $terminalDir "saved.ini") `
+              -Force
+
+            Write-Host ""
+            Write-Host "Prepared:"
+            Write-Host "  $terminalDir\terminal64.exe"
+            Write-Host "  $terminalDir\saved.ini"
+            Write-Host "  $terminalDir\config\servers.dat"
+            Write-Host ""
+
+            $index++
+          }
+
+
+      - name: Run
+        shell: powershell
+        run: |
+
+          $configs = '${{ toJSON(matrix.configs) }}' | ConvertFrom-Json
+
+          $processes = @()
+
+          $index = 1
+
+          foreach ($relativeIni in $configs) {
+
+            $terminalDir = "C:\MT5-Runners\MT5-$index"
+
+            $exe = Join-Path `
+              $terminalDir `
+              "terminal64.exe"
+
+            $configFile = Join-Path `
+              $terminalDir `
+              "saved.ini"
+
+            $serversFile = Join-Path `
+              $terminalDir `
+              "config\servers.dat"
+
+            Write-Host ""
+            Write-Host "========================================"
+            Write-Host "Starting MT5"
+            Write-Host "Repository : $relativeIni"
+            Write-Host "Terminal   : $exe"
+            Write-Host "INI        : $configFile"
+            Write-Host "Servers    : $serversFile"
+            Write-Host "========================================"
+
+            if (!(Test-Path $exe)) {
+              Write-Host "ERROR: terminal64.exe missing"
+              exit 1
+            }
+
+            if (!(Test-Path $configFile)) {
+              Write-Host "ERROR: saved.ini missing"
+              exit 1
+            }
+
+            if (!(Test-Path $serversFile)) {
+              Write-Host "ERROR: servers.dat missing"
+              exit 1
+            }
+
+            #
+            # Start this MT5 instance.
+            #
+            # /portable makes this copied MT5 installation
+            # use its own directory as its data directory.
+            #
+            # The saved.ini is explicitly supplied with /config.
+            #
+            Write-Host "Command:"
+            Write-Host "terminal64.exe /portable /config:`"$configFile`""
+            Write-Host ""
+
             $process = Start-Process `
-              -FilePath $exe.FullName `
-              -ArgumentList "/config:`"$ini`"" `
-              -WorkingDirectory $directoryToIni `
+              -FilePath $exe `
+              -ArgumentList "/portable /config:`"$configFile`"" `
+              -WorkingDirectory $terminalDir `
               -PassThru
 
             $processes += $process
 
+            Write-Host "Started MT5 PID: $($process.Id)"
+
             Start-Sleep -Seconds 2
+
+            $index++
           }
 
           Write-Host ""
+          Write-Host "========================================"
           Write-Host "All MT5 terminals started on this runner."
+          Write-Host "========================================"
           Write-Host ""
 
           foreach ($process in $processes) {
@@ -165,6 +370,7 @@ jobs:
           Write-Host "Keeping runner alive while MT5 terminals are running..."
 
           while ($true) {
+
             $running = @(
               $processes | Where-Object {
                 -not $_.HasExited
