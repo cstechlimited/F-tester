@@ -371,7 +371,7 @@ jobs:
             # Verify everything.
             #
             Write-Host ""
-            Write-Host "Prepared MT5-$index:"
+            Write-Host "Prepared MT5-${index}:"
             Write-Host "  $terminalDir\terminal64.exe"
             Write-Host "  $terminalDir\saved.ini"
             Write-Host "  $terminalDir\config\servers.dat"
