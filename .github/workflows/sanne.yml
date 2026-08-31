@@ -4,723 +4,209 @@ on:
   workflow_dispatch:
 
 jobs:
-
-  # Find every saved.ini and group them into maximum 3 per runner.
-  # This job does not need Windows, so use Ubuntu.
   prepare:
     runs-on: ubuntu-latest
-
     outputs:
       matrix: ${{ steps.find.outputs.matrix }}
-
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
-
 
       - name: Find Runners
         id: find
         shell: bash
         run: |
-
           set -e
-
-          mapfile -t configs < <(
-            find "$GITHUB_WORKSPACE" \
-              -type f \
-              -name "saved.ini" \
-              -print | sort
-          )
-
+          mapfile -t configs < <(find "$GITHUB_WORKSPACE" -type f -name "saved.ini" -print | sort)
           if [ "${#configs[@]}" -eq 0 ]; then
             echo "No saved.ini files found"
             exit 1
           fi
-
-          echo "Found ${#configs[@]} saved.ini files"
-          echo ""
-
           groups=()
           current=()
-
           for config in "${configs[@]}"; do
-
-            # Repository-relative path.
             relative="${config#"$GITHUB_WORKSPACE"/}"
-
-            # Normalize separators.
             relative="${relative//\\//}"
-
             directory="${config%/*}"
             servers="$directory/servers.dat"
-
-            #
-            # Every saved.ini folder must contain servers.dat.
-            #
             if [ ! -f "$servers" ]; then
-              echo ""
-              echo "ERROR: servers.dat is missing"
-              echo "Folder: $directory"
-              echo "Expected: $servers"
-              echo ""
+              echo "ERROR: servers.dat missing in $directory"
               exit 1
             fi
-
             current+=("$relative")
-
-            #
-            # Maximum 3 MT5 terminals per GitHub runner.
-            #
             if [ "${#current[@]}" -eq 3 ]; then
-
-              group_json=$(
-                printf '%s\n' "${current[@]}" |
-                jq -R -s -c '
-                  split("\n") |
-                  map(select(length > 0))
-                '
-              )
-
+              group_json=$(printf '%s\n' "${current[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
               groups+=("$group_json")
               current=()
-
             fi
-
           done
-
-
-          #
-          # Add remaining configurations.
-          #
           if [ "${#current[@]}" -gt 0 ]; then
-
-            group_json=$(
-              printf '%s\n' "${current[@]}" |
-              jq -R -s -c '
-                split("\n") |
-                map(select(length > 0))
-              '
-            )
-
+            group_json=$(printf '%s\n' "${current[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
             groups+=("$group_json")
-
           fi
-
-
-          echo "Creating ${#groups[@]} GitHub runner(s)"
-          echo ""
-
           include="[]"
-
-          number=1
-
           for group in "${groups[@]}"; do
-
-            echo "Runner ${number}:"
-
-            while IFS= read -r ini; do
-
-              folder="${ini%/*}"
-
-              echo "  Folder  : $folder"
-              echo "  INI     : $ini"
-              echo "  Servers : $folder/servers.dat"
-
-            done < <(
-              echo "$group" | jq -r '.[]'
-            )
-
-            echo ""
-
-            include=$(
-              jq -c \
-                --argjson configs "$group" \
-                '. + [{"configs": $configs}]' \
-                <<< "$include"
-            )
-
-            number=$((number + 1))
-
+            include=$(jq -c --argjson configs "$group" '. + [{"configs": $configs}]' <<< "$include")
           done
-
-
-          #
-          # Build the GitHub Actions matrix.
-          #
-          matrix=$(
-            jq -c \
-              --argjson include "$include" \
-              '{"include": $include}' \
-              <<< '{}'
-          )
-
-          echo "Matrix:"
-          echo "$matrix"
-          echo ""
-
+          matrix=$(jq -c --argjson include "$include" '{"include": $include}' <<< '{}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
 
   mt5:
     needs: prepare
-
     runs-on: windows-latest
-
     strategy:
       fail-fast: false
-
-      #
-      # Different matrix entries run on different GitHub runners.
-      #
       max-parallel: 10
-
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
-
     steps:
-
-
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      - name: Download
+      - name: Download MT5 installer
         shell: cmd
         run: |
-
           curl -fL "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -o mt5setup.exe
-
           if not exist mt5setup.exe exit /b 1
-
           for %%A in (mt5setup.exe) do if %%~zA==0 exit /b 1
 
-          echo Downloaded mt5setup.exe
-
-
-      - name: Install
-        shell: cmd
+      - name: Install MT5 instances and prepare files
+        shell: pwsh
         run: |
-
-          mt5setup.exe /auto /path:"C:\MT5"
-
-          echo Installer exit code: %ERRORLEVEL%
-
-          echo Checking C:\MT5...
-
-          if exist "C:\MT5\terminal64.exe" (
-
-            echo MT5 installed successfully
-            dir "C:\MT5"
-
-          ) else (
-
-            echo MT5 was NOT installed
-            dir "C:\MT5" 2>nul
-            exit /b 1
-
-          )
-
-
-      - name: Prepare Terminals
-        shell: pwsh   # Use PowerShell 7 for parallel capabilities
-        run: |
-
-          $source = "C:\MT5"
-
-          if (!(Test-Path "$source\terminal64.exe")) {
-            Write-Host "terminal64.exe was not found"
-            exit 1
-          }
-
           $configs = '${{ toJSON(matrix.configs) }}' | ConvertFrom-Json
-
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "This GitHub runner has $($configs.Count) MT5 configuration(s)"
-          Write-Host "Maximum allowed: 3"
-          Write-Host "========================================"
-          Write-Host ""
-
           $workspace = $env:GITHUB_WORKSPACE
+          $installer = Join-Path $workspace "mt5setup.exe"
 
-          # Parallel preparation using ForEach-Object -Parallel
-          # ThrottleLimit = number of configs (max 3)
-          $configs | ForEach-Object -Parallel {
+          for ($i = 0; $i -lt $configs.Count; $i++) {
+            $relativeIni = $configs[$i]
+            $instance = $i + 1
+            $installPath = "C:\MT5-$instance"
 
-            $relativeIni = $_
-            $source = $using:source
-            $workspace = $using:workspace
+            Write-Host "Installing MT5 instance $instance to $installPath"
+            if (Test-Path $installPath) {
+              Remove-Item $installPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
 
-            # Determine index based on position in original array
-            $index = [Array]::IndexOf($using:configs, $relativeIni) + 1
+            $proc = Start-Process -FilePath $installer -ArgumentList "/auto /path:`"$installPath`"" -Wait -PassThru -NoNewWindow
+            if ($proc.ExitCode -ne 0) {
+              Write-Host "MT5 installer failed for instance $instance"
+              exit 1
+            }
 
-            # Reconstruct repository path
+            if (!(Test-Path "$installPath\terminal64.exe")) {
+              Write-Host "terminal64.exe not found after installing MT5-$instance"
+              exit 1
+            }
+            Write-Host "MT5-$instance installed successfully"
+
+            # Derive repository paths
             $ini = Join-Path $workspace ($relativeIni -replace '/', '\')
             $directoryToIni = Split-Path $ini -Parent
-            $servers = Join-Path $directoryToIni "servers.dat"
+            $serversSource = Join-Path $directoryToIni "servers.dat"
 
-            # Validate saved.ini and servers.dat
-            if (!(Test-Path $ini)) {
-              Write-Host "ERROR: saved.ini not found: $ini"
+            # Copy servers.dat from repository into the instance's config folder
+            if (!(Test-Path $serversSource)) {
+              Write-Host "ERROR: servers.dat not found in repository: $serversSource"
               exit 1
             }
-            if (!(Test-Path $servers)) {
-              Write-Host "ERROR: servers.dat not found: $servers"
-              exit 1
+            $configTargetDir = Join-Path $installPath "config"
+            if (!(Test-Path $configTargetDir)) {
+              New-Item -ItemType Directory -Path $configTargetDir -Force | Out-Null
             }
+            Copy-Item -Path $serversSource -Destination (Join-Path $configTargetDir "servers.dat") -Force
+            Write-Host "Copied servers.dat to $configTargetDir"
 
-            $terminalDir = "C:\MT5-Runners\MT5-$index"
-
-            Write-Host "========================================"
-            Write-Host "Preparing MT5-$index (parallel)"
-            Write-Host "Repository : $directoryToIni"
-            Write-Host "INI        : $ini"
-            Write-Host "Servers    : $servers"
-            Write-Host "Terminal   : $terminalDir"
-            Write-Host "========================================"
-
-            # Remove old directory if present
-            if (Test-Path $terminalDir) {
-              Remove-Item $terminalDir -Recurse -Force
-            }
-
-            # Create isolated terminal directory
-            New-Item -ItemType Directory -Path $terminalDir -Force | Out-Null
-
-            # Copy MT5 installation
-            Copy-Item -Path "$source\*" -Destination $terminalDir -Recurse -Force
-
-            # Create config directory
-            $configDir = Join-Path $terminalDir "config"
-            New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-
-            # Copy servers.dat
-            Copy-Item -Path $servers -Destination (Join-Path $configDir "servers.dat") -Force
-
-            # Copy saved.ini
-            Copy-Item -Path $ini -Destination (Join-Path $terminalDir "saved.ini") -Force
-
-            # Copy all .ex5 files from configuration folder into MQL5\Experts
-            $expertsTarget = Join-Path $terminalDir "MQL5\Experts"
+            # Copy .ex5 files (EAs) into this instance's MQL5\Experts
+            $expertsTarget = Join-Path $installPath "MQL5\Experts"
             New-Item -ItemType Directory -Path $expertsTarget -Force | Out-Null
 
-            $ex5Files = @(
-              Get-ChildItem -Path $directoryToIni -Filter "*.ex5" -Recurse -File -ErrorAction SilentlyContinue
-            )
-
+            $ex5Files = @(Get-ChildItem -Path $directoryToIni -Filter "*.ex5" -Recurse -File -ErrorAction SilentlyContinue)
             if ($ex5Files.Count -gt 0) {
-              Write-Host "Found $($ex5Files.Count) .ex5 file(s) to copy"
+              Write-Host "Copying $($ex5Files.Count) .ex5 file(s) for MT5-$instance"
               foreach ($ex5 in $ex5Files) {
                 $relativePath = $ex5.FullName.Substring($directoryToIni.Length).TrimStart('\')
-                $destinationFile = Join-Path $expertsTarget $relativePath
-                $destDir = Split-Path $destinationFile -Parent
+                $destFile = Join-Path $expertsTarget $relativePath
+                $destDir = Split-Path $destFile -Parent
                 if (!(Test-Path $destDir)) {
                   New-Item -ItemType Directory -Path $destDir -Force | Out-Null
                 }
-                Copy-Item -Path $ex5.FullName -Destination $destinationFile -Force
-                Write-Host "  Copied: $relativePath"
+                Copy-Item -Path $ex5.FullName -Destination $destFile -Force
               }
             } else {
-              Write-Host "No .ex5 files found in configuration folder"
+              Write-Host "No .ex5 files found for MT5-$instance"
             }
+          }
 
-            # Verify critical files
-            if (!(Test-Path "$terminalDir\terminal64.exe")) {
-              Write-Host "ERROR: terminal64.exe was not copied for MT5-$index"
-              exit 1
-            }
-            if (!(Test-Path "$terminalDir\saved.ini")) {
-              Write-Host "ERROR: saved.ini was not copied for MT5-$index"
-              exit 1
-            }
-            if (!(Test-Path "$terminalDir\config\servers.dat")) {
-              Write-Host "ERROR: servers.dat was not copied for MT5-$index"
-              exit 1
-            }
-
-            Write-Host "Completed preparation for MT5-$index"
-            Write-Host ""
-
-          } -ThrottleLimit $configs.Count
-
-
-      - name: Run
+      - name: Run MT5 terminals
         shell: powershell
         run: |
-
-          #
-          # ============================================================
-          # LOG SETTINGS
-          # ============================================================
-          #
-          # FALSE = Terminal / Journal logs ONLY
-          #
-          # TRUE  = Terminal / Journal logs + Expert logs
-          #
-          # Terminal logs:
-          #   <MT5>\Logs\YYYYMMDD.log
-          #
-          # Expert logs:
-          #   <MT5>\MQL5\Logs\YYYYMMDD.log
-          #
-          # ============================================================
-          #
-          $READ_EXPERT_LOGS = $false
-          #
-          # ============================================================
-
-
           $configs = '${{ toJSON(matrix.configs) }}' | ConvertFrom-Json
-
           $processes = @()
-
-          #
-          # Keep track of how far we have read in every log file.
-          #
           $positions = @{}
+          $READ_EXPERT_LOGS = $false
 
-          $index = 1
+          for ($i = 0; $i -lt $configs.Count; $i++) {
+            $relativeIni = $configs[$i]
+            $instance = $i + 1
+            $installPath = "C:\MT5-$instance"
+            $ini = Join-Path $env:GITHUB_WORKSPACE ($relativeIni -replace '/', '\')
 
+            Write-Host "Starting MT5-$instance with config: $ini"
+            if (!(Test-Path "$installPath\terminal64.exe")) { Write-Host "terminal64.exe missing"; exit 1 }
+            if (!(Test-Path $ini)) { Write-Host "saved.ini missing"; exit 1 }
 
-          #
-          # Start all MT5 terminals on this GitHub runner.
-          #
-          foreach ($relativeIni in $configs) {
-
-            $terminalDir = "C:\MT5-Runners\MT5-$index"
-
-            $exe = Join-Path `
-              $terminalDir `
-              "terminal64.exe"
-
-            $configFile = Join-Path `
-              $terminalDir `
-              "saved.ini"
-
-            $serversFile = Join-Path `
-              $terminalDir `
-              "config\servers.dat"
-
-
-            Write-Host ""
-            Write-Host "========================================"
-            Write-Host "Starting MT5-$index"
-            Write-Host "Repository : $relativeIni"
-            Write-Host "Terminal   : $exe"
-            Write-Host "INI        : $configFile"
-            Write-Host "Servers    : $serversFile"
-            Write-Host "========================================"
-
-
-            if (!(Test-Path $exe)) {
-
-              Write-Host "ERROR: terminal64.exe missing"
-              exit 1
-
-            }
-
-
-            if (!(Test-Path $configFile)) {
-
-              Write-Host "ERROR: saved.ini missing"
-              exit 1
-
-            }
-
-
-            if (!(Test-Path $serversFile)) {
-
-              Write-Host "ERROR: servers.dat missing"
-              exit 1
-
-            }
-
-
-            #
-            # Start MT5 in portable mode.
-            #
-            Write-Host ""
-            Write-Host "Command:"
-            Write-Host "terminal64.exe /portable /config:`"$configFile`""
-            Write-Host ""
-
-
-            $process = Start-Process `
-              -FilePath $exe `
-              -ArgumentList "/portable /config:`"$configFile`"" `
-              -WorkingDirectory $terminalDir `
-              -PassThru
-
-
+            $process = Start-Process -FilePath "$installPath\terminal64.exe" -ArgumentList "/portable /config:`"$ini`"" -WorkingDirectory $installPath -PassThru
             $processes += $process
-
-            Write-Host "[MT5-$index] Started PID: $($process.Id)"
-
             Start-Sleep -Seconds 2
-
-            $index++
-
           }
 
-
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "All MT5 terminals started."
-          Write-Host "========================================"
-          Write-Host ""
-
-
-          foreach ($process in $processes) {
-
-            Write-Host "MT5 PID: $($process.Id)"
-
-          }
-
-
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "LIVE MT5 OUTPUT"
-          Write-Host "========================================"
-          Write-Host ""
-
-
-          #
-          # Function to read MT5 log files.
-          #
           function Read-MT5Logs {
-
-            param(
-              [int]$TerminalIndex
-            )
-
-
-            $terminalDir = "C:\MT5-Runners\MT5-$TerminalIndex"
-
-
-            #
-            # TERMINAL / JOURNAL LOGS
-            #
-            # These are ALWAYS read.
-            #
-            $logDirs = @(
-              @{
-                Path = Join-Path $terminalDir "Logs"
-                Type = "TERMINAL"
-              }
-            )
-
-
-            #
-            # EXPERT LOGS
-            #
-            # Only add these when enabled at the top.
-            #
+            param([int]$TerminalIndex)
+            $installPath = "C:\MT5-$TerminalIndex"
+            $logDirs = @(@{ Path = "$installPath\Logs"; Type = "TERMINAL" })
             if ($READ_EXPERT_LOGS) {
-
-              $logDirs += @{
-                Path = Join-Path $terminalDir "MQL5\Logs"
-                Type = "EXPERT"
-              }
-
+              $logDirs += @{ Path = "$installPath\MQL5\Logs"; Type = "EXPERT" }
             }
-
-
             foreach ($log in $logDirs) {
-
-              $logDir = $log.Path
-              $logType = $log.Type
-
-
-              if (!(Test-Path $logDir)) {
-                continue
-              }
-
-
-              #
-              # Find all log files.
-              #
-              $files = @(
-                Get-ChildItem `
-                  -Path $logDir `
-                  -Filter "*.log" `
-                  -File `
-                  -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime
-              )
-
-
+              if (!(Test-Path $log.Path)) { continue }
+              $files = Get-ChildItem -Path $log.Path -Filter "*.log" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime
               foreach ($file in $files) {
-
                 $key = $file.FullName
-
-
-                #
-                # Start at byte 0 for a new log file.
-                #
-                if (!$positions.ContainsKey($key)) {
-
-                  $positions[$key] = 0
-
-                }
-
-
+                if (!$positions.ContainsKey($key)) { $positions[$key] = 0 }
                 try {
-
                   $length = $file.Length
-
-
-                  #
-                  # File was truncated/replaced.
-                  #
-                  if ($length -lt $positions[$key]) {
-
-                    $positions[$key] = 0
-
-                  }
-
-
-                  #
-                  # Only read newly written data.
-                  #
+                  if ($length -lt $positions[$key]) { $positions[$key] = 0 }
                   if ($length -gt $positions[$key]) {
-
-                    $stream = [System.IO.File]::Open(
-                      $file.FullName,
-                      [System.IO.FileMode]::Open,
-                      [System.IO.FileAccess]::Read,
-                      [System.IO.FileShare]::ReadWrite
-                    )
-
-
+                    $stream = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
                     try {
-
-                      $stream.Seek(
-                        $positions[$key],
-                        [System.IO.SeekOrigin]::Begin
-                      ) | Out-Null
-
-
-                      $reader = New-Object `
-                        System.IO.StreamReader(
-                          $stream,
-                          [System.Text.Encoding]::Default,
-                          $true
-                        )
-
-
-                      while (
-                        ($line = $reader.ReadLine()) -ne $null
-                      ) {
-
+                      $stream.Seek($positions[$key], [System.IO.SeekOrigin]::Begin) | Out-Null
+                      $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::Default, $true)
+                      while (($line = $reader.ReadLine()) -ne $null) {
                         if ($line.Trim().Length -gt 0) {
-
-                          Write-Host "[MT5-$TerminalIndex][$logType] $line"
-
+                          Write-Host "[MT5-$TerminalIndex][$($log.Type)] $line"
                         }
-
                       }
-
-
                       $reader.Dispose()
-
-                    }
-                    finally {
-
+                    } finally {
                       $stream.Dispose()
-
                     }
-
-
-                    #
-                    # Remember where we stopped reading.
-                    #
                     $positions[$key] = $length
-
                   }
-
-                }
-                catch {
-
-                  #
-                  # MT5 can temporarily lock the log file.
-                  # Retry during the next cycle.
-                  #
-
-                }
-
+                } catch {}
               }
-
             }
-
           }
 
-
-          #
-          # Main live monitoring loop.
-          #
           while ($true) {
-
-
-            #
-            # Read logs from every MT5 instance.
-            #
-            for (
-              $i = 1;
-              $i -le $configs.Count;
-              $i++
-            ) {
-
-              Read-MT5Logs `
-                -TerminalIndex $i
-
+            for ($i = 1; $i -le $configs.Count; $i++) {
+              Read-MT5Logs -TerminalIndex $i
             }
-
-
-            #
-            # Check whether terminals are still running.
-            #
-            $running = @(
-              $processes |
-              Where-Object {
-                -not $_.HasExited
-              }
-            )
-
-
-            #
-            # All terminals exited.
-            #
+            $running = @($processes | Where-Object { -not $_.HasExited })
             if ($running.Count -eq 0) {
-
-              #
-              # Final read to capture messages written
-              # immediately before shutdown.
-              #
-              for (
-                $i = 1;
-                $i -le $configs.Count;
-                $i++
-              ) {
-
-                Read-MT5Logs `
-                  -TerminalIndex $i
-
+              for ($i = 1; $i -le $configs.Count; $i++) {
+                Read-MT5Logs -TerminalIndex $i
               }
-
-
-              Write-Host ""
-              Write-Host "========================================"
-              Write-Host "All MT5 terminals have exited."
-              Write-Host "========================================"
-
+              Write-Host "All MT5 terminals exited."
               break
-
             }
-
-
-            #
-            # Poll every 500 milliseconds.
-            #
             Start-Sleep -Milliseconds 500
-
           }
