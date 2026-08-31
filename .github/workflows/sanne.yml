@@ -172,7 +172,6 @@ jobs:
 
       #
       # Different matrix entries run on different GitHub runners.
-      # Therefore MT5 installations happen concurrently.
       #
       max-parallel: 10
 
@@ -411,13 +410,34 @@ jobs:
         shell: powershell
         run: |
 
+          #
+          # ============================================================
+          # LOG SETTINGS
+          # ============================================================
+          #
+          # FALSE = Terminal / Journal logs ONLY
+          #
+          # TRUE  = Terminal / Journal logs + Expert logs
+          #
+          # Terminal logs:
+          #   <MT5>\Logs\YYYYMMDD.log
+          #
+          # Expert logs:
+          #   <MT5>\MQL5\Logs\YYYYMMDD.log
+          #
+          # ============================================================
+          #
+          $READ_EXPERT_LOGS = $false
+          #
+          # ============================================================
+
+
           $configs = '${{ toJSON(matrix.configs) }}' | ConvertFrom-Json
 
           $processes = @()
 
           #
-          # Keep track of which byte position we have already
-          # printed from every MT5 log file.
+          # Keep track of how far we have read in every log file.
           #
           $positions = @{}
 
@@ -425,7 +445,7 @@ jobs:
 
 
           #
-          # Start all MT5 terminals on this runner.
+          # Start all MT5 terminals on this GitHub runner.
           #
           foreach ($relativeIni in $configs) {
 
@@ -479,9 +499,7 @@ jobs:
 
 
             #
-            # Exact command:
-            #
-            # terminal64.exe /portable /config:"saved.ini"
+            # Start MT5 in portable mode.
             #
             Write-Host ""
             Write-Host "Command:"
@@ -498,9 +516,9 @@ jobs:
 
             $processes += $process
 
-
             Write-Host "[MT5-$index] Started PID: $($process.Id)"
 
+            Start-Sleep -Seconds 2
 
             $index++
 
@@ -529,7 +547,7 @@ jobs:
 
 
           #
-          # Function that reads new data from MT5 log files.
+          # Function to read MT5 log files.
           #
           function Read-MT5Logs {
 
@@ -542,19 +560,38 @@ jobs:
 
 
             #
-            # MT5 terminal Journal logs.
+            # TERMINAL / JOURNAL LOGS
+            #
+            # These are ALWAYS read.
             #
             $logDirs = @(
-              (Join-Path $terminalDir "Logs"),
-
-              #
-              # MQL5 Expert Advisor logs.
-              #
-              (Join-Path $terminalDir "MQL5\Logs")
+              @{
+                Path = Join-Path $terminalDir "Logs"
+                Type = "TERMINAL"
+              }
             )
 
 
-            foreach ($logDir in $logDirs) {
+            #
+            # EXPERT LOGS
+            #
+            # Only add these when enabled at the top.
+            #
+            if ($READ_EXPERT_LOGS) {
+
+              $logDirs += @{
+                Path = Join-Path $terminalDir "MQL5\Logs"
+                Type = "EXPERT"
+              }
+
+            }
+
+
+            foreach ($log in $logDirs) {
+
+              $logDir = $log.Path
+              $logType = $log.Type
+
 
               if (!(Test-Path $logDir)) {
                 continue
@@ -562,7 +599,7 @@ jobs:
 
 
               #
-              # Find log files.
+              # Find all log files.
               #
               $files = @(
                 Get-ChildItem `
@@ -580,7 +617,7 @@ jobs:
 
 
                 #
-                # Start at byte 0 for a new file.
+                # Start at byte 0 for a new log file.
                 #
                 if (!$positions.ContainsKey($key)) {
 
@@ -595,7 +632,7 @@ jobs:
 
 
                   #
-                  # Log file was replaced/truncated.
+                  # File was truncated/replaced.
                   #
                   if ($length -lt $positions[$key]) {
 
@@ -608,7 +645,6 @@ jobs:
                   # Only read newly written data.
                   #
                   if ($length -gt $positions[$key]) {
-
 
                     $stream = [System.IO.File]::Open(
                       $file.FullName,
@@ -640,7 +676,7 @@ jobs:
 
                         if ($line.Trim().Length -gt 0) {
 
-                          Write-Host "[MT5-$TerminalIndex] $line"
+                          Write-Host "[MT5-$TerminalIndex][$logType] $line"
 
                         }
 
@@ -658,7 +694,7 @@ jobs:
 
 
                     #
-                    # Remember how far we read.
+                    # Remember where we stopped reading.
                     #
                     $positions[$key] = $length
 
@@ -668,8 +704,8 @@ jobs:
                 catch {
 
                   #
-                  # MT5 may temporarily have the log file locked.
-                  # Try again during the next cycle.
+                  # MT5 can temporarily lock the log file.
+                  # Retry during the next cycle.
                   #
 
                 }
@@ -682,13 +718,13 @@ jobs:
 
 
           #
-          # Main monitoring loop.
+          # Main live monitoring loop.
           #
           while ($true) {
 
 
             #
-            # Read output from every MT5 instance.
+            # Read logs from every MT5 instance.
             #
             for (
               $i = 1;
@@ -703,7 +739,7 @@ jobs:
 
 
             #
-            # Check whether any MT5 terminal is still running.
+            # Check whether terminals are still running.
             #
             $running = @(
               $processes |
@@ -714,13 +750,13 @@ jobs:
 
 
             #
-            # All terminals have exited.
+            # All terminals exited.
             #
             if ($running.Count -eq 0) {
 
               #
-              # Do one final log read so messages written immediately
-              # before shutdown are captured.
+              # Final read to capture messages written
+              # immediately before shutdown.
               #
               for (
                 $i = 1;
@@ -745,7 +781,7 @@ jobs:
 
 
             #
-            # Check logs frequently.
+            # Poll every 500 milliseconds.
             #
             Start-Sleep -Milliseconds 500
 
