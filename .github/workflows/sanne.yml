@@ -33,6 +33,7 @@ jobs:
               echo "ERROR: servers.dat missing in $directory"
               exit 1
             fi
+            # Each saved.ini becomes its own matrix entry (one runner per folder)
             include=$(jq -c --arg config "$relative" '. + [{"configs": [$config]}]' <<< "$include")
           done
 
@@ -61,7 +62,7 @@ jobs:
         shell: pwsh
         run: |
           $configs = '${{ toJSON(matrix.configs) }}' | ConvertFrom-Json
-          $relativeIni = $configs[0]
+          $relativeIni = $configs[0]   # each runner has exactly one saved.ini
           $workspace = $env:GITHUB_WORKSPACE
           $installer = Join-Path $workspace "mt5setup.exe"
           $installPath = "C:\MT5"
@@ -71,7 +72,7 @@ jobs:
             Remove-Item $installPath -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-          # No exit code check – only verify terminal64.exe presence after installation
+          # Start installer, do NOT check exit code – only verify terminal64.exe afterwards
           Start-Process -FilePath $installer -ArgumentList "/auto /path:`"$installPath`"" -Wait -NoNewWindow
 
           if (!(Test-Path "$installPath\terminal64.exe")) {
@@ -80,7 +81,7 @@ jobs:
           }
           Write-Host "MT5 installed successfully"
 
-          # Derive repository paths
+          # Use this folder's own saved.ini and servers.dat
           $ini = Join-Path $workspace ($relativeIni -replace '/', '\')
           $directoryToIni = Split-Path $ini -Parent
           $serversSource = Join-Path $directoryToIni "servers.dat"
@@ -120,7 +121,6 @@ jobs:
       - name: Run MT5 terminal
         shell: powershell
         run: |
-          $relativeIni = ($configs | ConvertFrom-Json)[0]  # not needed, we already have from previous? we'll re-derive
           $configs = '${{ toJSON(matrix.configs) }}' | ConvertFrom-Json
           $relativeIni = $configs[0]
           $installPath = "C:\MT5"
@@ -137,9 +137,10 @@ jobs:
           $READ_EXPERT_LOGS = $false
 
           function Read-MT5Logs {
-            $logDirs = @(@{ Path = "$installPath\Logs"; Type = "TERMINAL" })
+            param([string]$InstallPath)
+            $logDirs = @(@{ Path = "$InstallPath\Logs"; Type = "TERMINAL" })
             if ($READ_EXPERT_LOGS) {
-              $logDirs += @{ Path = "$installPath\MQL5\Logs"; Type = "EXPERT" }
+              $logDirs += @{ Path = "$InstallPath\MQL5\Logs"; Type = "EXPERT" }
             }
             foreach ($log in $logDirs) {
               if (!(Test-Path $log.Path)) { continue }
@@ -172,10 +173,10 @@ jobs:
           }
 
           while ($true) {
-            Read-MT5Logs
+            Read-MT5Logs -InstallPath $installPath
             if ($process.HasExited) {
               # Final read to capture last messages
-              Read-MT5Logs
+              Read-MT5Logs -InstallPath $installPath
               Write-Host "MT5 terminal exited."
               break
             }
