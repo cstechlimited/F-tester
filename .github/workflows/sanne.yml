@@ -222,7 +222,7 @@ jobs:
 
 
       - name: Prepare Terminals
-        shell: powershell
+        shell: pwsh   # Use PowerShell 7 for parallel capabilities
         run: |
 
           $source = "C:\MT5"
@@ -241,169 +241,107 @@ jobs:
           Write-Host "========================================"
           Write-Host ""
 
-          $index = 1
+          $workspace = $env:GITHUB_WORKSPACE
 
-          foreach ($relativeIni in $configs) {
+          # Parallel preparation using ForEach-Object -Parallel
+          # ThrottleLimit = number of configs (max 3)
+          $configs | ForEach-Object -Parallel {
 
-            #
-            # Reconstruct repository path on this Windows runner.
-            #
-            $ini = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              ($relativeIni -replace '/', '\')
+            $relativeIni = $_
+            $source = $using:source
+            $workspace = $using:workspace
 
+            # Determine index based on position in original array
+            $index = [Array]::IndexOf($using:configs, $relativeIni) + 1
+
+            # Reconstruct repository path
+            $ini = Join-Path $workspace ($relativeIni -replace '/', '\')
             $directoryToIni = Split-Path $ini -Parent
+            $servers = Join-Path $directoryToIni "servers.dat"
 
-            $servers = Join-Path `
-              $directoryToIni `
-              "servers.dat"
-
-
-            #
-            # Validate saved.ini.
-            #
+            # Validate saved.ini and servers.dat
             if (!(Test-Path $ini)) {
-
-              Write-Host "ERROR: saved.ini not found"
-              Write-Host "Path: $ini"
-
+              Write-Host "ERROR: saved.ini not found: $ini"
               exit 1
             }
-
-
-            #
-            # Validate servers.dat.
-            #
             if (!(Test-Path $servers)) {
-
-              Write-Host "ERROR: servers.dat not found"
-              Write-Host "Path: $servers"
-
+              Write-Host "ERROR: servers.dat not found: $servers"
               exit 1
             }
 
-
-            #
-            # Every MT5 terminal gets its own isolated directory.
-            #
             $terminalDir = "C:\MT5-Runners\MT5-$index"
 
             Write-Host "========================================"
-            Write-Host "Preparing MT5-$index"
+            Write-Host "Preparing MT5-$index (parallel)"
             Write-Host "Repository : $directoryToIni"
             Write-Host "INI        : $ini"
             Write-Host "Servers    : $servers"
             Write-Host "Terminal   : $terminalDir"
             Write-Host "========================================"
 
-
-            #
-            # Remove old directory if present.
-            #
+            # Remove old directory if present
             if (Test-Path $terminalDir) {
-
-              Remove-Item `
-                $terminalDir `
-                -Recurse `
-                -Force
-
+              Remove-Item $terminalDir -Recurse -Force
             }
 
+            # Create isolated terminal directory
+            New-Item -ItemType Directory -Path $terminalDir -Force | Out-Null
 
-            #
-            # Create isolated terminal directory.
-            #
-            New-Item `
-              -ItemType Directory `
-              -Path $terminalDir `
-              -Force |
-              Out-Null
+            # Copy MT5 installation
+            Copy-Item -Path "$source\*" -Destination $terminalDir -Recurse -Force
 
+            # Create config directory
+            $configDir = Join-Path $terminalDir "config"
+            New-Item -ItemType Directory -Path $configDir -Force | Out-Null
 
-            #
-            # Copy MT5 installation.
-            #
-            Copy-Item `
-              -Path "$source\*" `
-              -Destination $terminalDir `
-              -Recurse `
-              -Force
+            # Copy servers.dat
+            Copy-Item -Path $servers -Destination (Join-Path $configDir "servers.dat") -Force
 
+            # Copy saved.ini
+            Copy-Item -Path $ini -Destination (Join-Path $terminalDir "saved.ini") -Force
 
-            #
-            # Create MT5 config directory.
-            #
-            $configDir = Join-Path `
-              $terminalDir `
-              "config"
+            # Copy all .ex5 files from configuration folder into MQL5\Experts
+            $expertsTarget = Join-Path $terminalDir "MQL5\Experts"
+            New-Item -ItemType Directory -Path $expertsTarget -Force | Out-Null
 
-            New-Item `
-              -ItemType Directory `
-              -Path $configDir `
-              -Force |
-              Out-Null
+            $ex5Files = @(
+              Get-ChildItem -Path $directoryToIni -Filter "*.ex5" -Recurse -File -ErrorAction SilentlyContinue
+            )
 
+            if ($ex5Files.Count -gt 0) {
+              Write-Host "Found $($ex5Files.Count) .ex5 file(s) to copy"
+              foreach ($ex5 in $ex5Files) {
+                $relativePath = $ex5.FullName.Substring($directoryToIni.Length).TrimStart('\')
+                $destinationFile = Join-Path $expertsTarget $relativePath
+                $destDir = Split-Path $destinationFile -Parent
+                if (!(Test-Path $destDir)) {
+                  New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                }
+                Copy-Item -Path $ex5.FullName -Destination $destinationFile -Force
+                Write-Host "  Copied: $relativePath"
+              }
+            } else {
+              Write-Host "No .ex5 files found in configuration folder"
+            }
 
-            #
-            # Copy THIS folder's servers.dat.
-            #
-            Copy-Item `
-              -Path $servers `
-              -Destination (
-                Join-Path $configDir "servers.dat"
-              ) `
-              -Force
-
-
-            #
-            # Copy THIS folder's saved.ini.
-            #
-            Copy-Item `
-              -Path $ini `
-              -Destination (
-                Join-Path $terminalDir "saved.ini"
-              ) `
-              -Force
-
-
-            #
-            # Verify everything.
-            #
-            Write-Host ""
-            Write-Host "Prepared MT5-${index}:"
-            Write-Host "  $terminalDir\terminal64.exe"
-            Write-Host "  $terminalDir\saved.ini"
-            Write-Host "  $terminalDir\config\servers.dat"
-            Write-Host ""
-
-
+            # Verify critical files
             if (!(Test-Path "$terminalDir\terminal64.exe")) {
-
-              Write-Host "ERROR: terminal64.exe was not copied"
+              Write-Host "ERROR: terminal64.exe was not copied for MT5-$index"
               exit 1
-
             }
-
-
             if (!(Test-Path "$terminalDir\saved.ini")) {
-
-              Write-Host "ERROR: saved.ini was not copied"
+              Write-Host "ERROR: saved.ini was not copied for MT5-$index"
               exit 1
-
             }
-
-
             if (!(Test-Path "$terminalDir\config\servers.dat")) {
-
-              Write-Host "ERROR: servers.dat was not copied"
+              Write-Host "ERROR: servers.dat was not copied for MT5-$index"
               exit 1
-
             }
 
+            Write-Host "Completed preparation for MT5-$index"
+            Write-Host ""
 
-            $index++
-
-          }
+          } -ThrottleLimit $configs.Count
 
 
       - name: Run
