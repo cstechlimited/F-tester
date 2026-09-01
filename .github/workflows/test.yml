@@ -8,60 +8,246 @@ jobs:
     runs-on: windows-latest
 
     steps:
+
+      # ---------------------------------------------------------
+      # ENABLE WINDOWS REMOTE DESKTOP
+      # ---------------------------------------------------------
       - name: Enable Windows RDP
         shell: cmd
         run: |
-          echo Enabling Remote Desktop...
+          echo.
+          echo ========================================
+          echo        ENABLING WINDOWS RDP
+          echo ========================================
+          echo.
 
+          echo [1/4] Enabling Remote Desktop connections...
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" ^
-            /v fDenyTSConnections /t REG_DWORD /d 0 /f
+            /v fDenyTSConnections ^
+            /t REG_DWORD ^
+            /d 0 ^
+            /f
 
-          netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+          if errorlevel 1 (
+            echo ERROR: Failed to enable RDP.
+            exit /b 1
+          )
 
-          sc config TermService start=auto
-          net start TermService
-
-          echo.
-          echo ==============================
-          echo RDP SERVER ENABLED
-          echo ==============================
-          echo.
-
-      - name: Create RDP user
-        shell: cmd
-        run: |
-          net user rdpuser "ChangeThisPassword123!" /add
-          net localgroup "Remote Desktop Users" rdpuser /add
-
-          echo.
-          echo RDP USER:
-          echo rdpuser
-          echo.
-          echo RDP PASSWORD:
-          echo ChangeThisPassword123!
+          echo RDP registry setting enabled successfully.
           echo.
 
-      - name: Display connection information
+          echo [2/4] Enabling Windows Firewall RDP rules...
+          netsh advfirewall firewall set rule ^
+            group="remote desktop" ^
+            new enable=Yes
+
+          echo Firewall configuration completed.
+          echo.
+
+          echo [3/4] Configuring Remote Desktop Service...
+          sc config TermService start= auto
+
+          if errorlevel 1 (
+            echo ERROR: Failed to configure TermService.
+            exit /b 1
+          )
+
+          echo TermService configured.
+          echo.
+
+          echo [4/4] Checking Remote Desktop Service...
+          sc query TermService | find "RUNNING" >nul
+
+          if errorlevel 1 (
+            echo TermService is not running.
+            echo Attempting to start it...
+
+            net start TermService
+
+            if errorlevel 1 (
+              echo WARNING: Could not start TermService.
+              echo Checking service status...
+              sc query TermService
+            )
+          ) else (
+            echo TermService is already running.
+          )
+
+          echo.
+          echo ========================================
+          echo        RDP SERVER ENABLED
+          echo ========================================
+          echo.
+
+      # ---------------------------------------------------------
+      # CREATE TEMPORARY RDP USER
+      # ---------------------------------------------------------
+      - name: Create RDP User
         shell: powershell
         run: |
+          $ErrorActionPreference = "Stop"
+
+          $username = "rdpuser"
+
+          # Generate a random temporary password
+          $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
+          $password = -join (1..20 | ForEach-Object {
+              $chars[(Get-Random -Maximum $chars.Length)]
+          })
+
+          Write-Host "Creating RDP user..."
+
+          $securePassword = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
+          # Remove an existing user if present
+          $existing = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+
+          if ($existing) {
+              Write-Host "Existing rdpuser found. Removing it..."
+              Remove-LocalUser -Name $username
+          }
+
+          New-LocalUser `
+            -Name $username `
+            -Password $securePassword `
+            -PasswordNeverExpires `
+            -UserMayNotChangePassword
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username
+
+          Write-Host ""
+          Write-Host "RDP user created successfully."
+
+          # Save details for the next step
+          "RDP_USERNAME=$username" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Append
+
+          "RDP_PASSWORD=$password" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Append
+
+      # ---------------------------------------------------------
+      # DIAGNOSTICS + CONNECTION INFORMATION
+      # ---------------------------------------------------------
+      - name: Display RDP Connection Information
+        shell: powershell
+        run: |
+
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "        RDP CONNECTION INFORMATION"
+          Write-Host "       RDP CONNECTION INFORMATION"
           Write-Host "========================================"
+          Write-Host ""
 
-          $ip = (Get-NetIPAddress -AddressFamily IPv4 |
+          # Computer name
+          $computerName = $env:COMPUTERNAME
+
+          Write-Host "Computer Name : $computerName"
+
+          # Get IPv4 addresses
+          $addresses = Get-NetIPAddress `
+            -AddressFamily IPv4 `
+            -ErrorAction SilentlyContinue |
             Where-Object {
               $_.IPAddress -notlike "127.*" -and
               $_.IPAddress -notlike "169.254.*"
-            } |
-            Select-Object -First 1 -ExpandProperty IPAddress)
+            }
 
-          Write-Host "IP Address : $ip"
-          Write-Host "Port       : 3389"
-          Write-Host "Username   : rdpuser"
-          Write-Host "Password   : ChangeThisPassword123!"
+          if ($addresses) {
+              Write-Host ""
+              Write-Host "IPv4 Addresses:"
+              $addresses | ForEach-Object {
+                  Write-Host "  $($_.IPAddress)"
+              }
+          }
+          else {
+              Write-Host ""
+              Write-Host "WARNING: No usable IPv4 address found."
+          }
 
+          Write-Host ""
+          Write-Host "RDP Port     : 3389"
+          Write-Host "Username     : $env:RDP_USERNAME"
+          Write-Host "Password     : $env:RDP_PASSWORD"
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       RDP SERVICE STATUS"
+          Write-Host "========================================"
+
+          Get-Service -Name TermService |
+            Format-Table Name, Status, StartType
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       FIREWALL STATUS"
+          Write-Host "========================================"
+
+          Get-NetFirewallRule -DisplayGroup "Remote Desktop" |
+            Where-Object Enabled -eq "True" |
+            Select-Object DisplayName, Enabled, Direction, Action |
+            Format-Table
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       RDP LISTENER TEST"
+          Write-Host "========================================"
+
+          $listener = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if ($listener) {
+              Write-Host "SUCCESS: RDP is listening on port 3389."
+              $listener | Format-Table LocalAddress, LocalPort, State
+          }
+          else {
+              Write-Host "WARNING: Nothing is listening on port 3389."
+          }
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "       CONNECTION COMMAND"
           Write-Host "========================================"
           Write-Host ""
-          Write-Host "Connect using:"
-          Write-Host "mstsc /v:$ip"
+
+          Write-Host "On Windows:"
+          Write-Host "mstsc /v:$computerName"
+
+          Write-Host ""
+          Write-Host "On Linux with Remmina:"
+          Write-Host "Protocol: RDP"
+          Write-Host "Server:   <runner IP>"
+          Write-Host "Port:     3389"
+          Write-Host "Username: $env:RDP_USERNAME"
+          Write-Host "Password: $env:RDP_PASSWORD"
+
+          Write-Host ""
+          Write-Host "========================================"
+
+      # ---------------------------------------------------------
+      # KEEP RUNNER ALIVE
+      # ---------------------------------------------------------
+      - name: Keep RDP Session Alive
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "RDP is configured."
+          Write-Host "Keeping the runner alive..."
+          Write-Host "Press Ctrl+C only if testing locally."
+          Write-Host ""
+
+          while ($true) {
+              $status = (Get-Service TermService).Status
+
+              Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - TermService: $status"
+
+              Start-Sleep -Seconds 60
+          }
