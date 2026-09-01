@@ -19,7 +19,7 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile $installer
 
           Start-Process msiexec.exe `
-            -ArgumentList "/i `"$installer`" /quiet /norestart" `
+            -ArgumentList "/i `"$installer`" /quiet /norestart SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=sanne" `
             -Wait `
             -NoNewWindow
 
@@ -27,16 +27,9 @@ jobs:
         shell: powershell
         run: |
           # VNC password is set to "sanne"
-          $password = "sanne"
+          # TightVNC password is configured during MSI installation.
 
-          New-Item -Path "HKLM:\SOFTWARE\TightVNC" -Force | Out-Null
-
-          New-ItemProperty `
-            -Path "HKLM:\SOFTWARE\TightVNC" `
-            -Name "Password" `
-            -PropertyType String `
-            -Value $password `
-            -Force | Out-Null
+          Write-Host "TightVNC password configured."
 
       - name: Start VNC server
         shell: powershell
@@ -53,7 +46,9 @@ jobs:
             exit 1
           }
 
-          Start-Process $vnc.FullName
+          Start-Process `
+            -FilePath $vnc.FullName `
+            -ArgumentList "-service"
 
           Start-Sleep -Seconds 5
 
@@ -99,7 +94,6 @@ jobs:
       - name: Configure ngrok
         shell: powershell
         run: |
-          # ⚠️ Replace YOUR_NGROK_AUTHTOKEN_HERE with your actual ngrok authtoken
           $ngrokToken = "3IiME5Z0qPJP5d3v0nBtpy7NaC0_4BnhtPb8vmQDDfznQhJJV"
 
           ngrok config add-authtoken "$ngrokToken"
