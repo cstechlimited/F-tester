@@ -1,0 +1,295 @@
+name: Sanne Android Builder
+
+# ---------------------------------------------------------------------------
+# Files can now be supplied through parameters instead of repo files.
+#
+# For workflow_dispatch you can pass:
+#   app_files_url     -> a direct URL to a .zip / .tar.gz of the web app
+#   app_files_base64  -> the same archive, base64-encoded, pasted inline
+#                        (note: GitHub caps the whole inputs payload, so keep
+#                         this under ~60 KB — prefer app_files_url for big apps)
+#
+# Any of these override the corresponding value from VA/details.san:
+#   app_name, package_name, logo
+#
+# If nothing is supplied, the workflow falls back to the old behaviour
+# (VA/ directory + VA/details.san in the repo).
+# ---------------------------------------------------------------------------
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "App name (overrides details.san)"
+        required: false
+        default: ""
+      package_name:
+        description: "Package name, e.g. com.example.app (overrides details.san)"
+        required: false
+        default: ""
+      logo:
+        description: "Logo URL or path inside the app files (overrides details.san)"
+        required: false
+        default: ""
+      app_files_url:
+        description: "URL to a .zip / .tar.gz of the web app files"
+        required: false
+        default: ""
+      app_files_base64:
+        description: "Base64-encoded .zip / .tar.gz of the web app files"
+        required: false
+        default: ""
+
+env:
+  APP_DIR: VA
+  DETAILS_FILE: VA/details.san
+  DEFAULT_APP_NAME: "SanneWebApp"
+  DEFAULT_PACKAGE_NAME: "com.sanne.webapp"
+  DEFAULT_LOGO: "https://picsum.photos/512"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Parse App Details
+        env:
+          IN_APP_NAME: ${{ inputs.app_name }}
+          IN_PACKAGE_NAME: ${{ inputs.package_name }}
+          IN_LOGO: ${{ inputs.logo }}
+        run: |
+          get_val() {
+            [ -f "$DETAILS_FILE" ] && grep "^$1=" "$DETAILS_FILE" | cut -d'=' -f2 | head -n1
+          }
+          APP_NAME="${IN_APP_NAME:-$(get_val appName)}"
+          PACKAGE_NAME="${IN_PACKAGE_NAME:-$(get_val packageName)}"
+          LOGO="${IN_LOGO:-$(get_val logo)}"
+          [ -z "$APP_NAME" ] && APP_NAME="$DEFAULT_APP_NAME"
+          [ -z "$PACKAGE_NAME" ] && PACKAGE_NAME="$DEFAULT_PACKAGE_NAME"
+          [ -z "$LOGO" ] && LOGO="$DEFAULT_LOGO"
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+          echo "LOGO=$LOGO" >> $GITHUB_ENV
+          PACKAGE_PATH=$(echo $PACKAGE_NAME | tr '.' '/')
+          echo "PACKAGE_PATH=$PACKAGE_PATH" >> $GITHUB_ENV
+
+      - name: Fetch App
+        env:
+          APP_FILES_URL: ${{ inputs.app_files_url }}
+          APP_FILES_B64: ${{ inputs.app_files_base64 }}
+        run: |
+          rm -rf build_app
+          mkdir -p build_app
+
+          extract_archive() {
+            local src="$1" dest="$2"
+            rm -rf "$dest"; mkdir -p "$dest"
+            if unzip -l "$src" >/dev/null 2>&1; then
+              unzip -q "$src" -d "$dest"
+            else
+              tar -xzf "$src" -C "$dest" 2>/dev/null || tar -xf "$src" -C "$dest"
+            fi
+            # If the archive has a single top-level folder, flatten it
+            local count
+            count=$(ls -A "$dest" | wc -l)
+            if [ "$count" -eq 1 ] && [ -d "$dest/$(ls -A "$dest")" ]; then
+              local inner="$dest/$(ls -A "$dest")"
+              shopt -s dotglob nullglob
+              mv "$inner"/* "$dest"/
+              shopt -u dotglob nullglob
+              rmdir "$inner" 2>/dev/null || true
+            fi
+          }
+
+          if [ -n "$APP_FILES_URL" ]; then
+            echo "Downloading app files from URL..."
+            curl -L "$APP_FILES_URL" -o app_files.bin
+            extract_archive app_files.bin build_app
+          elif [ -n "$APP_FILES_B64" ]; then
+            echo "Decoding app files from base64 input..."
+            printf '%s' "$APP_FILES_B64" | tr -d ' \n\r\t' | base64 -d > app_files.bin
+            extract_archive app_files.bin build_app
+          else
+            echo "No file parameters supplied - falling back to repo $APP_DIR/"
+            rsync -av --exclude='details.san' $APP_DIR/ build_app/
+          fi
+
+          rm -f build_app/details.san
+
+      - name: Prepare Logo
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg imagemagick
+          mkdir -p android/app/src/main/res
+          if [[ "$LOGO" =~ ^https?:// ]]; then
+            curl -L "$LOGO" -o icon.tmp
+          elif [ -f "build_app/$LOGO" ]; then
+            cp "build_app/$LOGO" icon.tmp
+          elif [ -f "$APP_DIR/$LOGO" ]; then
+            cp "$APP_DIR/$LOGO" icon.tmp
+          else
+            curl -L "$DEFAULT_LOGO" -o icon.tmp
+          fi
+          ffmpeg -y -i icon.tmp icon.png || convert icon.tmp -background none -flatten icon.png
+          declare -A sizes=( ["mdpi"]=48 ["hdpi"]=72 ["xhdpi"]=96 ["xxhdpi"]=144 ["xxxhdpi"]=192 )
+          for density in "${!sizes[@]}"; do
+            mkdir -p android/app/src/main/res/mipmap-$density
+            convert icon.png -resize ${sizes[$density]}x${sizes[$density]} \
+              android/app/src/main/res/mipmap-$density/ic_launcher.png
+          done
+
+      - name: Create Android Project
+        run: |
+          mkdir -p android/app/src/main/java/$PACKAGE_PATH
+          mkdir -p android/app/src/main/assets
+          cp -r build_app/* android/app/src/main/assets/
+
+      - name: Create MainActivity
+        run: |
+          cat > android/app/src/main/java/$PACKAGE_PATH/MainActivity.java << EOF
+          package $PACKAGE_NAME;
+          import android.os.Bundle;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.webkit.WebSettings;
+          import android.app.Activity;
+
+          public class MainActivity extends Activity {
+              WebView webView;
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  webView = new WebView(this);
+                  setContentView(webView);
+                  WebSettings s = webView.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.loadUrl("file:///android_asset/index.html");
+              }
+          }
+          EOF
+
+      - name: Android Config
+        run: |
+          mkdir -p android
+
+          cat > android/gradle.properties << EOF
+          android.useAndroidX=true
+          android.enableJetifier=true
+          EOF
+
+          cat > android/settings.gradle << EOF
+          rootProject.name = "$APP_NAME"
+          include ':app'
+          EOF
+
+          cat > android/build.gradle << 'EOF'
+          buildscript {
+            repositories { google(); mavenCentral() }
+            dependencies { classpath 'com.android.tools.build:gradle:8.4.0' }
+          }
+          allprojects {
+            repositories { google(); mavenCentral() }
+          }
+          EOF
+
+          cat > android/app/build.gradle << EOF
+          plugins {
+            id 'com.android.application'
+          }
+          android {
+            namespace "$PACKAGE_NAME"
+            compileSdk 35
+            signingConfigs {
+              release {
+                storeFile file("\$rootDir/keystore.jks")
+                storePassword "password"
+                keyAlias "sanne"
+                keyPassword "password"
+              }
+            }
+            defaultConfig {
+              applicationId "$PACKAGE_NAME"
+              minSdk 21
+              targetSdk 35
+              versionCode 1
+              versionName "1.0"
+            }
+            buildTypes {
+              release {
+                signingConfig signingConfigs.release
+                minifyEnabled false
+              }
+            }
+          }
+          dependencies {
+            implementation 'androidx.appcompat:appcompat:1.7.0'
+          }
+          configurations.all {
+              resolutionStrategy {
+                  force "org.jetbrains.kotlin:kotlin-stdlib:1.8.22"
+                  force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22"
+                  force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
+              }
+          }
+          EOF
+
+      - name: Manifest
+        run: |
+          cat > android/app/src/main/AndroidManifest.xml << EOF
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="$PACKAGE_NAME">
+
+            <!-- Internet access is a normal permission granted at install time -->
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <!-- Optional: storage permissions (dangerous; require runtime request) -->
+            <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+            <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+
+            <application
+                android:label="$APP_NAME"
+                android:icon="@mipmap/ic_launcher">
+              <activity android:name=".MainActivity"
+                        android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+
+      - name: Generate Keystore
+        run: |
+          keytool -genkeypair \
+            -alias sanne -keyalg RSA -keysize 2048 \
+            -validity 10000 -dname "CN=$APP_NAME" \
+            -storepass password -keypass password \
+            -keystore android/keystore.jks
+
+      - name: Build Release APK
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.6
+          chmod +x ./gradlew
+          ./gradlew assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: android/app/build/outputs/apk/release/*.apk
