@@ -3,18 +3,22 @@ name: Sanne Android Builder
 on:
   workflow_dispatch:
     inputs:
-      zip_url:
-        description: 'Direct download URL of the ZIP file containing the web app (must contain index.html)'
+      zip_file:
+        description: 'ZIP file path in the repository'
         required: true
+        default: 'apps/myapp.zip'
         type: string
+
       app_name:
         description: 'App name (optional - overrides details.san)'
         required: false
         type: string
+
       package_name:
         description: 'Package name (optional - overrides details.san)'
         required: false
         type: string
+
       logo:
         description: 'Logo URL or path inside the ZIP (optional - overrides details.san)'
         required: false
@@ -23,6 +27,7 @@ on:
 env:
   APP_DIR: VA
   DETAILS_FILE: VA/details.san
+
   DEFAULT_APP_NAME: "SanneWebApp"
   DEFAULT_PACKAGE_NAME: "com.sanne.webapp"
   DEFAULT_LOGO: "https://picsum.photos/512"
@@ -36,223 +41,666 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download App ZIP
+
+      # ============================================================
+      # CHECKOUT REPOSITORY
+      # ============================================================
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+
+      # ============================================================
+      # EXTRACT APP ZIP
+      # ============================================================
+
+      - name: Extract App ZIP
         env:
-          ZIP_URL: ${{ inputs.zip_url }}
+          ZIP_FILE: ${{ inputs.zip_file }}
         run: |
           set -e
-          command -v unzip >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y unzip; }
+
+          command -v unzip >/dev/null 2>&1 || {
+            sudo apt-get update
+            sudo apt-get install -y unzip
+          }
+
+          echo "ZIP file: $ZIP_FILE"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo ""
+            echo "ERROR: ZIP file not found:"
+            echo "$ZIP_FILE"
+            echo ""
+            echo "Files available in the repository:"
+            find . -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
           rm -rf raw_app "$APP_DIR"
-          mkdir -p raw_app "$APP_DIR"
-          curl -fL "$ZIP_URL" -o app.zip
-          unzip -q -o app.zip -d raw_app
-          # Support zips that wrap everything inside a single top-level folder
-          TOP_LEVEL_DIRS=$(find raw_app -maxdepth 1 -mindepth 1 -type d | wc -l)
-          TOP_LEVEL_FILES=$(find raw_app -maxdepth 1 -mindepth 1 -type f | wc -l)
+
+          mkdir -p raw_app
+          mkdir -p "$APP_DIR"
+
+          unzip -q -o "$ZIP_FILE" -d raw_app
+
+          echo ""
+          echo "ZIP contents:"
+          find raw_app -maxdepth 4 -type f | sort
+
+          # --------------------------------------------------------
+          # Support ZIPs that contain one top-level folder.
+          #
+          # Example:
+          #
+          # myapp.zip
+          #   myapp/
+          #     index.html
+          #     css/
+          #     js/
+          #
+          # This will copy the contents of myapp/ into VA/
+          # --------------------------------------------------------
+
+          TOP_LEVEL_DIRS=$(find raw_app \
+            -maxdepth 1 \
+            -mindepth 1 \
+            -type d | wc -l)
+
+          TOP_LEVEL_FILES=$(find raw_app \
+            -maxdepth 1 \
+            -mindepth 1 \
+            -type f | wc -l)
+
           if [ "$TOP_LEVEL_DIRS" -eq 1 ] && [ "$TOP_LEVEL_FILES" -eq 0 ]; then
-            SRC="$(find raw_app -maxdepth 1 -mindepth 1 -type d)"
+            SRC="$(find raw_app \
+              -maxdepth 1 \
+              -mindepth 1 \
+              -type d)"
+
+            echo ""
+            echo "Detected single top-level directory:"
+            echo "$SRC"
+
           else
             SRC="raw_app"
-          fi
-          cp -a "$SRC"/. "$APP_DIR"/
-          rm -rf raw_app app.zip
-          echo "Extracted app contents:"
-          ls -la "$APP_DIR"
 
-      - uses: actions/setup-java@v4
+            echo ""
+            echo "Using ZIP root as application directory."
+          fi
+
+          cp -a "$SRC"/. "$APP_DIR"/
+
+          rm -rf raw_app
+
+          echo ""
+          echo "Final application contents:"
+          find "$APP_DIR" -maxdepth 4 -type f | sort
+
+
+      # ============================================================
+      # VERIFY INDEX.HTML
+      # ============================================================
+
+      - name: Verify Web App
+        run: |
+          set -e
+
+          if [ ! -f "$APP_DIR/index.html" ]; then
+            echo ""
+            echo "ERROR: index.html was not found."
+            echo ""
+            echo "Your ZIP must contain index.html."
+            echo ""
+            echo "Application contents:"
+            find "$APP_DIR" -maxdepth 5 -type f | sort
+            exit 1
+          fi
+
+          echo "index.html found."
+
+
+      # ============================================================
+      # JAVA
+      # ============================================================
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v4
+
+      # ============================================================
+      # ANDROID SDK
+      # ============================================================
+
+      - name: Setup Android
+        uses: android-actions/setup-android@v4
+
+
+      # ============================================================
+      # PARSE APP DETAILS
+      # ============================================================
 
       - name: Parse App Details
         env:
           IN_APP_NAME: ${{ inputs.app_name }}
           IN_PACKAGE_NAME: ${{ inputs.package_name }}
           IN_LOGO: ${{ inputs.logo }}
+
         run: |
+          set -e
+
           get_val() {
-            [ -f "$DETAILS_FILE" ] && grep "^$1=" "$DETAILS_FILE" | cut -d'=' -f2 | head -n1
+            if [ -f "$DETAILS_FILE" ]; then
+              grep "^$1=" "$DETAILS_FILE" \
+                | cut -d'=' -f2- \
+                | head -n1
+            fi
           }
+
+          # --------------------------------------------------------
+          # APP NAME
+          # --------------------------------------------------------
+
           APP_NAME="$IN_APP_NAME"
-          [ -z "$APP_NAME" ] && APP_NAME=$(get_val appName)
-          [ -z "$APP_NAME" ] && APP_NAME="$DEFAULT_APP_NAME"
+
+          if [ -z "$APP_NAME" ]; then
+            APP_NAME=$(get_val appName)
+          fi
+
+          if [ -z "$APP_NAME" ]; then
+            APP_NAME="$DEFAULT_APP_NAME"
+          fi
+
+
+          # --------------------------------------------------------
+          # PACKAGE NAME
+          # --------------------------------------------------------
+
           PACKAGE_NAME="$IN_PACKAGE_NAME"
-          [ -z "$PACKAGE_NAME" ] && PACKAGE_NAME=$(get_val packageName)
-          [ -z "$PACKAGE_NAME" ] && PACKAGE_NAME="$DEFAULT_PACKAGE_NAME"
+
+          if [ -z "$PACKAGE_NAME" ]; then
+            PACKAGE_NAME=$(get_val packageName)
+          fi
+
+          if [ -z "$PACKAGE_NAME" ]; then
+            PACKAGE_NAME="$DEFAULT_PACKAGE_NAME"
+          fi
+
+
+          # --------------------------------------------------------
+          # LOGO
+          # --------------------------------------------------------
+
           LOGO="$IN_LOGO"
-          [ -z "$LOGO" ] && LOGO=$(get_val logo)
-          [ -z "$LOGO" ] && LOGO="$DEFAULT_LOGO"
-          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
-          echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
-          echo "LOGO=$LOGO" >> $GITHUB_ENV
-          PACKAGE_PATH=$(echo $PACKAGE_NAME | tr '.' '/')
-          echo "PACKAGE_PATH=$PACKAGE_PATH" >> $GITHUB_ENV
+
+          if [ -z "$LOGO" ]; then
+            LOGO=$(get_val logo)
+          fi
+
+          if [ -z "$LOGO" ]; then
+            LOGO="$DEFAULT_LOGO"
+          fi
+
+
+          # --------------------------------------------------------
+          # PACKAGE PATH
+          # --------------------------------------------------------
+
+          PACKAGE_PATH=$(echo "$PACKAGE_NAME" | tr '.' '/')
+
+
+          # --------------------------------------------------------
+          # EXPORT VARIABLES
+          # --------------------------------------------------------
+
+          echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=$PACKAGE_NAME" >> "$GITHUB_ENV"
+          echo "LOGO=$LOGO" >> "$GITHUB_ENV"
+          echo "PACKAGE_PATH=$PACKAGE_PATH" >> "$GITHUB_ENV"
+
+
+          echo ""
+          echo "=============================="
+          echo "Application configuration"
+          echo "=============================="
+          echo "App name:     $APP_NAME"
+          echo "Package:      $PACKAGE_NAME"
+          echo "Logo:         $LOGO"
+          echo "Package path: $PACKAGE_PATH"
+          echo "=============================="
+
+
+      # ============================================================
+      # COPY WEB APP
+      # ============================================================
 
       - name: Copy App
         run: |
-          mkdir build_app
-          rsync -av --exclude='details.san' $APP_DIR/ build_app/
+          set -e
+
+          rm -rf build_app
+          mkdir -p build_app
+
+          rsync -av \
+            --exclude='details.san' \
+            "$APP_DIR"/ \
+            build_app/
+
+          echo ""
+          echo "Web app copied:"
+          find build_app -maxdepth 5 -type f | sort
+
+
+      # ============================================================
+      # PREPARE LOGO
+      # ============================================================
 
       - name: Prepare Logo
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg imagemagick
+          set -e
+
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg imagemagick
+
           mkdir -p android/app/src/main/res
+
+          # --------------------------------------------------------
+          # Get logo
+          # --------------------------------------------------------
+
           if [[ "$LOGO" =~ ^https?:// ]]; then
-            curl -L "$LOGO" -o icon.tmp
+
+            echo "Downloading logo:"
+            echo "$LOGO"
+
+            curl -fL "$LOGO" -o icon.tmp
+
           elif [ -f "$APP_DIR/$LOGO" ]; then
+
+            echo "Using logo from ZIP:"
+            echo "$APP_DIR/$LOGO"
+
             cp "$APP_DIR/$LOGO" icon.tmp
+
           else
-            curl -L "$DEFAULT_LOGO" -o icon.tmp
+
+            echo "Logo not found."
+            echo "Using default logo:"
+            echo "$DEFAULT_LOGO"
+
+            curl -fL "$DEFAULT_LOGO" -o icon.tmp
+
           fi
-          ffmpeg -y -i icon.tmp icon.png || convert icon.tmp -background none -flatten icon.png
-          declare -A sizes=( ["mdpi"]=48 ["hdpi"]=72 ["xhdpi"]=96 ["xxhdpi"]=144 ["xxxhdpi"]=192 )
+
+
+          # --------------------------------------------------------
+          # Convert to PNG
+          # --------------------------------------------------------
+
+          ffmpeg \
+            -y \
+            -i icon.tmp \
+            icon.png \
+            || convert \
+              icon.tmp \
+              -background none \
+              -flatten \
+              icon.png
+
+
+          # --------------------------------------------------------
+          # Android launcher icon sizes
+          # --------------------------------------------------------
+
+          declare -A sizes=(
+            ["mdpi"]=48
+            ["hdpi"]=72
+            ["xhdpi"]=96
+            ["xxhdpi"]=144
+            ["xxxhdpi"]=192
+          )
+
           for density in "${!sizes[@]}"; do
-            mkdir -p android/app/src/main/res/mipmap-$density
-            convert icon.png -resize ${sizes[$density]}x${sizes[$density]} \
-              android/app/src/main/res/mipmap-$density/ic_launcher.png
+
+            mkdir -p \
+              "android/app/src/main/res/mipmap-$density"
+
+            convert \
+              icon.png \
+              -resize "${sizes[$density]}x${sizes[$density]}" \
+              "android/app/src/main/res/mipmap-$density/ic_launcher.png"
+
           done
+
+
+      # ============================================================
+      # CREATE ANDROID PROJECT
+      # ============================================================
 
       - name: Create Android Project
         run: |
-          mkdir -p android/app/src/main/java/$PACKAGE_PATH
-          mkdir -p android/app/src/main/assets
-          cp -r build_app/* android/app/src/main/assets/
+          set -e
+
+          mkdir -p \
+            "android/app/src/main/java/$PACKAGE_PATH"
+
+          mkdir -p \
+            android/app/src/main/assets
+
+          cp -r build_app/. \
+            android/app/src/main/assets/
+
+          echo "Android assets:"
+          find android/app/src/main/assets -maxdepth 5 -type f | sort
+
+
+      # ============================================================
+      # CREATE MAIN ACTIVITY
+      # ============================================================
 
       - name: Create MainActivity
         run: |
-          cat > android/app/src/main/java/$PACKAGE_PATH/MainActivity.java << EOF
+          set -e
+
+          cat > "android/app/src/main/java/$PACKAGE_PATH/MainActivity.java" << EOF
           package $PACKAGE_NAME;
+
+          import android.app.Activity;
           import android.os.Bundle;
+          import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
-          import android.webkit.WebSettings;
-          import android.app.Activity;
 
           public class MainActivity extends Activity {
-              WebView webView;
+
+              private WebView webView;
+
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+
                   webView = new WebView(this);
+
                   setContentView(webView);
-                  WebSettings s = webView.getSettings();
-                  s.setJavaScriptEnabled(true);
-                  s.setDomStorageEnabled(true);
+
+                  WebSettings settings = webView.getSettings();
+
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
+
                   webView.setWebViewClient(new WebViewClient());
-                  webView.loadUrl("file:///android_asset/index.html");
+
+                  webView.loadUrl(
+                      "file:///android_asset/index.html"
+                  );
+              }
+
+              @Override
+              public void onBackPressed() {
+
+                  if (webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
               }
           }
           EOF
 
+
+      # ============================================================
+      # ANDROID CONFIGURATION
+      # ============================================================
+
       - name: Android Config
         run: |
+          set -e
+
           mkdir -p android
 
-          cat > android/gradle.properties << EOF
+
+          # --------------------------------------------------------
+          # Gradle properties
+          # --------------------------------------------------------
+
+          cat > android/gradle.properties << 'EOF'
           android.useAndroidX=true
           android.enableJetifier=true
           EOF
 
+
+          # --------------------------------------------------------
+          # Settings
+          # --------------------------------------------------------
+
           cat > android/settings.gradle << EOF
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(
+                  RepositoriesMode.FAIL_ON_PROJECT_REPOS
+              )
+
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
           rootProject.name = "$APP_NAME"
+
           include ':app'
           EOF
 
+
+          # --------------------------------------------------------
+          # Root Gradle
+          # --------------------------------------------------------
+
           cat > android/build.gradle << 'EOF'
-          buildscript {
-            repositories { google(); mavenCentral() }
-            dependencies { classpath 'com.android.tools.build:gradle:8.4.0' }
-          }
-          allprojects {
-            repositories { google(); mavenCentral() }
+          plugins {
+              id 'com.android.application' version '8.4.0' apply false
           }
           EOF
 
+
+          # --------------------------------------------------------
+          # App Gradle
+          # --------------------------------------------------------
+
           cat > android/app/build.gradle << EOF
           plugins {
-            id 'com.android.application'
+              id 'com.android.application'
           }
+
           android {
-            namespace "$PACKAGE_NAME"
-            compileSdk 35
-            signingConfigs {
-              release {
-                storeFile file("\$rootDir/keystore.jks")
-                storePassword "password"
-                keyAlias "sanne"
-                keyPassword "password"
+
+              namespace "$PACKAGE_NAME"
+
+              compileSdk 35
+
+              defaultConfig {
+
+                  applicationId "$PACKAGE_NAME"
+
+                  minSdk 21
+
+                  targetSdk 35
+
+                  versionCode 1
+
+                  versionName "1.0"
               }
-            }
-            defaultConfig {
-              applicationId "$PACKAGE_NAME"
-              minSdk 21
-              targetSdk 35
-              versionCode 1
-              versionName "1.0"
-            }
-            buildTypes {
-              release {
-                signingConfig signingConfigs.release
-                minifyEnabled false
+
+              signingConfigs {
+
+                  release {
+
+                      storeFile file("\$rootDir/keystore.jks")
+
+                      storePassword "password"
+
+                      keyAlias "sanne"
+
+                      keyPassword "password"
+                  }
               }
-            }
+
+              buildTypes {
+
+                  release {
+
+                      signingConfig signingConfigs.release
+
+                      minifyEnabled false
+                  }
+              }
           }
+
           dependencies {
-            implementation 'androidx.appcompat:appcompat:1.7.0'
+
+              implementation 'androidx.appcompat:appcompat:1.7.0'
           }
+
           configurations.all {
+
               resolutionStrategy {
+
                   force "org.jetbrains.kotlin:kotlin-stdlib:1.8.22"
+
                   force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22"
+
                   force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
               }
           }
           EOF
 
+
+      # ============================================================
+      # ANDROID MANIFEST
+      # ============================================================
+
       - name: Manifest
         run: |
+          set -e
+
           cat > android/app/src/main/AndroidManifest.xml << EOF
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="$PACKAGE_NAME">
+          <manifest
+              xmlns:android="http://schemas.android.com/apk/res/android">
 
-            <!-- Internet access is a normal permission granted at install time -->
-            <uses-permission android:name="android.permission.INTERNET"/>
-            <!-- Optional: storage permissions (dangerous; require runtime request) -->
-            <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-            <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+              <uses-permission
+                  android:name="android.permission.INTERNET"/>
 
-            <application
-                android:label="$APP_NAME"
-                android:icon="@mipmap/ic_launcher">
-              <activity android:name=".MainActivity"
-                        android:exported="true">
-                <intent-filter>
-                  <action android:name="android.intent.action.MAIN"/>
-                  <category android:name="android.intent.category.LAUNCHER"/>
-                </intent-filter>
-              </activity>
-            </application>
+              <uses-permission
+                  android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+
+              <uses-permission
+                  android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+
+              <application
+                  android:label="$APP_NAME"
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+
+                      <intent-filter>
+
+                          <action
+                              android:name="android.intent.action.MAIN"/>
+
+                          <category
+                              android:name="android.intent.category.LAUNCHER"/>
+
+                      </intent-filter>
+
+                  </activity>
+
+              </application>
+
           </manifest>
           EOF
 
+
+      # ============================================================
+      # GENERATE SIGNING KEY
+      # ============================================================
+
       - name: Generate Keystore
         run: |
-          keytool -genkeypair \
-            -alias sanne -keyalg RSA -keysize 2048 \
-            -validity 10000 -dname "CN=$APP_NAME" \
-            -storepass password -keypass password \
+          set -e
+
+          keytool \
+            -genkeypair \
+            -alias sanne \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=$APP_NAME" \
+            -storepass password \
+            -keypass password \
             -keystore android/keystore.jks
+
+
+      # ============================================================
+      # BUILD RELEASE APK
+      # ============================================================
 
       - name: Build Release APK
         run: |
-          cd android
-          gradle wrapper --gradle-version 8.6
-          chmod +x ./gradlew
-          ./gradlew assembleRelease
+          set -e
 
-      - uses: actions/upload-artifact@v4
+          cd android
+
+          gradle wrapper \
+            --gradle-version 8.6
+
+          chmod +x ./gradlew
+
+          ./gradlew \
+            assembleRelease \
+            --no-daemon
+
+
+      # ============================================================
+      # SHOW APK
+      # ============================================================
+
+      - name: Show APK
+        run: |
+          echo ""
+          echo "=============================="
+          echo "BUILD COMPLETE"
+          echo "=============================="
+
+          find android/app/build/outputs/apk/release \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          echo "=============================="
+
+
+      # ============================================================
+      # UPLOAD APK
+      # ============================================================
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: android-apk
           path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
